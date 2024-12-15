@@ -16,6 +16,8 @@ import traceback
 from utils.formatter import format_audio_list, find_latest_best_model, list_audios
 from utils.gpt_train import train_gpt
 from utils.vits_train import train_vits_model
+from utils.speedy_train import train_speedy_model
+from utils.fastspeech2_train import train_fastspeech2_model
 
 from faster_whisper import WhisperModel
 from TTS.tts.configs.xtts_config import XttsConfig
@@ -36,9 +38,9 @@ def download_file(url, destination):
         return None
 
 def remove_log_file(file_path):
-    log_file = Path(file_path)
-    if log_file.exists() and log_file.is_file():
-        log_file.unlink()
+     log_file = Path(file_path)
+     if log_file.exists() and log_file.is_file():
+         log_file.unlink()
 
 def clear_gpu_cache():
     if torch.cuda.is_available():
@@ -192,7 +194,6 @@ def optimize_model(out_path, clear_train_data):
             print(f"Error deleting {dataset_dir}: {e}")
 
     model_path = ready_dir / "unoptimize_model.pth"
-
     if not model_path.is_file():
         alt_model_path = ready_dir / "model.pth"
         if alt_model_path.is_file():
@@ -204,6 +205,7 @@ def optimize_model(out_path, clear_train_data):
     if "optimizer" in checkpoint:
         del checkpoint["optimizer"]
 
+    # remove dvae key if present (XTTS)
     if "model" in checkpoint:
         keys_to_remove = [k for k in checkpoint["model"].keys() if "dvae" in k]
         for k in keys_to_remove:
@@ -240,31 +242,23 @@ def handle_training(custom_model, model_selection, version, lang, train_csv, eva
         return train_gpt(custom_model, version, lang, num_epochs, batch_size, grad_acumm, train_csv, eval_csv, output_path=out_path, max_audio_length=max_audio_length)
     elif model_selection == "VITS":
         return train_vits_model(custom_model, lang, train_csv, eval_csv, num_epochs, batch_size, grad_acumm, out_path, max_audio_length)
+    elif model_selection == "SpeedySpeech":
+        return train_speedy_model(custom_model, lang, train_csv, eval_csv, num_epochs, batch_size, grad_acumm, out_path, max_audio_length)
+    elif model_selection == "Fastspeech2":
+        return train_fastspeech2_model(custom_model, lang, train_csv, eval_csv, num_epochs, batch_size, grad_acumm, out_path, max_audio_length)
     else:
         return "Invalid model selection!", "", "", "", "", ""
 
 def toggle_inference_visibility(model_type):
-    # We have 20 outputs total.
-    # Ensure both returns have exactly 20 updates.
-
-    # Order of outputs to update:
-    # load_params_tts_btn, xtts_checkpoint, xtts_config, xtts_vocab, xtts_speaker, load_btn,
-    # speaker_reference_audio, tts_language, tts_text, temperature, length_penalty, repetition_penalty,
-    # top_k, top_p, sentence_split, use_config, tts_btn, progress_gen, tts_output_audio, reference_audio
-
+    # 20 outputs total. XTTS visible, others hidden.
     if model_type == "XTTS":
-        # XTTS selected, show them all
         return tuple([gr.update(visible=True) for _ in range(20)])
     else:
-        # VITS selected, hide them all
+        # VITS, SpeedySpeech, Fastspeech2
         return tuple([gr.update(visible=False) for _ in range(20)])
 
 if __name__ == "__main__":
-
-    parser = argparse.ArgumentParser(
-        description="""XTTS and VITS fine-tuning demo""",
-        formatter_class=argparse.RawTextHelpFormatter,
-    )
+    parser = argparse.ArgumentParser(description="XTTS, VITS, SpeedySpeech, and Fastspeech2 fine-tuning demo", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--whisper_model", type=str, default="large-v3")
     parser.add_argument("--audio_folder_path", type=str, default="")
     parser.add_argument("--share", action="store_true", default=False)
@@ -274,7 +268,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--grad_acumm", type=int, default=1)
     parser.add_argument("--max_audio_length", type=int, default=11)
-
     args = parser.parse_args()
 
     with gr.Blocks(title=os.environ.get("APP_NAME", "Gradio")) as demo:
@@ -288,9 +281,9 @@ if __name__ == "__main__":
             prompt_compute_btn = gr.Button("Step 1 - Create dataset")
 
         with gr.Tab("2 - Fine-tuning TTS Model"):
-            model_selection = gr.Dropdown(label="Select TTS model to fine-tune", value="XTTS", choices=["XTTS","VITS"])
+            model_selection = gr.Dropdown(label="Select TTS model to fine-tune", value="XTTS", choices=["XTTS","VITS","SpeedySpeech","Fastspeech2"])
             load_params_btn = gr.Button("Load Params from output folder")
-            version = gr.Dropdown(label="XTTS base version (ignored if VITS)", value="v2.0.2", choices=["v2.0.3","v2.0.2","v2.0.1","v2.0.0","main"])
+            version = gr.Dropdown(label="XTTS base version (ignored if not XTTS)", value="v2.0.2", choices=["v2.0.3","v2.0.2","v2.0.1","v2.0.0","main"])
             train_csv = gr.Textbox(label="Train CSV:")
             eval_csv = gr.Textbox(label="Eval CSV:")
             custom_model = gr.Textbox(label="(Optional) Custom model.pth URL or path", value="")
@@ -336,9 +329,8 @@ if __name__ == "__main__":
                 with gr.Column() as col3:
                     progress_gen = gr.Label(label="Progress:")
                     tts_output_audio = gr.Audio(label="Generated Audio.")
-                    reference_audio = gr.Audio(label="Reference audio used.")
+                    reference_audio = gr.Audio(label="Reference audio used:")
 
-            # Model selection changes inference visibility
             model_selection.change(
                 fn=toggle_inference_visibility,
                 inputs=[model_selection],
@@ -366,7 +358,6 @@ if __name__ == "__main__":
                 ]
             )
 
-            # Actions
             prompt_compute_btn.click(
                 fn=preprocess_dataset,
                 inputs=[upload_file, audio_folder_path, lang, whisper_model, out_path, train_csv, eval_csv],
