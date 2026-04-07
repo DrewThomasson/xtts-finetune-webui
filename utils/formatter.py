@@ -181,9 +181,6 @@ def format_audio_list(audio_files, asr_model, target_language="en", out_path=Non
 
             if is_sentence_end or is_too_long or is_last_word:
                 cleaned = sentence.strip()
-                # Strip leading space that Whisper often adds
-                if cleaned and cleaned[0] == " ":
-                    cleaned = cleaned[1:]
                 cleaned = multilingual_cleaners(cleaned, target_language)
 
                 if not cleaned:
@@ -224,7 +221,12 @@ def format_audio_list(audio_files, asr_model, target_language="en", out_path=Non
 
     # Shuffle and split into train / eval sets
     combined_df_shuffled = combined_df.sample(frac=1)
-    num_val_samples = max(1, int(len(combined_df_shuffled) * eval_percentage))
+    num_val_samples = min(
+        len(combined_df_shuffled) - 1,
+        max(1, int(len(combined_df_shuffled) * eval_percentage)),
+    )
+    # Ensure at least 1 training sample remains
+    num_val_samples = max(0, num_val_samples)
 
     final_eval_set = combined_df_shuffled[:num_val_samples]
     final_training_set = combined_df_shuffled[num_val_samples:]
